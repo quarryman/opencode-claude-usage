@@ -12,6 +12,8 @@ interface FetchResult {
   usage: OAuthUsageResponse | null
   profile: ProfileResponse | null
   authMethod: AuthMethod
+  /** true when usage is reused old data (429), must not refresh the cache */
+  stale?: boolean
 }
 
 const CACHE_DIR = join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "opencode-claude-usage")
@@ -87,8 +89,10 @@ function writeCacheStore(store: CacheStoreV2): void {
 
 function readCache(email: string | null): FetchResult | null {
   const store = readCacheStore()
-  const key = email ?? UNKNOWN_ACCOUNT_KEY
-  const entry = store.accounts[key]
+  // email unknown (claude CLI logged out) → newest entry of any account
+  const entry = email !== null
+    ? store.accounts[email]
+    : Object.values(store.accounts).sort((a, b) => b.timestamp - a.timestamp)[0]
   if (!entry) return null
   if (Date.now() - entry.timestamp > CACHE_MAX_AGE_MS) return null
   if (!entry.result?.usage) return null
@@ -331,6 +335,7 @@ export async function fetchUsageData(expectedEmail: string | null = null): Promi
       usage: lastOAuthUsage,
       profile: oauthProfile,
       authMethod: "oauth",
+      stale: true,
     }
   }
 
@@ -378,9 +383,13 @@ export async function fetchUsageData(expectedEmail: string | null = null): Promi
  * Preserves stale data during loading to prevent UI flicker.
  */
 export function createRefreshLoop(
-  setState: (state: UsageState) => void,
+  setStateRaw: (state: UsageState) => void,
   intervalMs: number,
 ): { start: () => void; stop: () => void } {
+  // expose the 429 lock to the UI (status + countdown only)
+  const setState = (s: UsageState): void => {
+    setStateRaw({ ...s, rateLimitedUntil: Date.now() < rateLimitedUntil ? rateLimitedUntil : null })
+  }
   let timer: ReturnType<typeof setInterval> | null = null
   let refreshing = false
   let lastData: UsageState["data"] = null
@@ -395,13 +404,16 @@ export function createRefreshLoop(
 
     const currentEmail = getCurrentEmail()
 
-    if (lastEmail !== null && currentEmail !== lastEmail) {
+    // treat null (email undeterminable — `claude auth status` spawn
+    // timed out) as "unknown", not as "account switched". Resetting state on null
+    // wiped lastData on every tick and pinned the widget to "not-configured".
+    if (currentEmail !== null && lastEmail !== null && currentEmail !== lastEmail) {
       resetAuthState()
       lastData = null
       lastProfile = null
       lastAuthMethod = "none"
     }
-    lastEmail = currentEmail
+    if (currentEmail !== null) lastEmail = currentEmail
 
     if (isFirstRun) {
       const cached = readCache(currentEmail)
@@ -461,7 +473,7 @@ export function createRefreshLoop(
         lastData = result.usage
         lastProfile = result.profile
         lastAuthMethod = result.authMethod
-        writeCache(cacheKey, result)
+        if (!result.stale) writeCache(cacheKey, result)
         setState({
           status: "success",
           data: result.usage,

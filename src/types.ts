@@ -102,6 +102,8 @@ export interface UsageState {
   profile: ProfileResponse | null
   authMethod: AuthMethod
   error: string | null
+  /** epoch ms until which the usage API refused us (429), else null */
+  rateLimitedUntil?: number | null
 }
 
 // Plugin configuration options (from tui.json)

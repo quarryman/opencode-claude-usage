@@ -90,7 +90,12 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
   const loop = createRefreshLoop(wrappedSetState, refreshIntervalMs)
   loop.start()
 
+  // 1s clock for the "refused, retry in" countdown
+  const [now, setNow] = createSignal(Date.now())
+  const clockTimer = setInterval(() => setNow(Date.now()), 1000)
+
   api.lifecycle.onDispose(() => {
+    clearInterval(clockTimer)
     loop.stop()
     if (tickTimer) clearInterval(tickTimer)
   })
@@ -105,6 +110,18 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
         const valueFg = options.valueColor ?? "#82AAFF"
 
         const s = state()
+
+        // refused with nothing to show yet → say so, not "claude login"
+        const refusedLeft = s.rateLimitedUntil ? Math.ceil((s.rateLimitedUntil - now()) / 1000) : 0
+        if (!s.data && refusedLeft > 0) {
+          const mmss = `${Math.floor(refusedLeft / 60)}:${String(refusedLeft % 60).padStart(2, "0")}`
+          return (
+            <box flexDirection="column">
+              <box height={1}><text fg={CLAUDE_ORANGE}><b>{"Claude Usage"}</b></text></box>
+              <box height={1}><text fg={CLAUDE_ORANGE}>{` Refused (429) · retry ${mmss}`}</text></box>
+            </box>
+          ) as any
+        }
 
         if (s.status === "not-configured") {
           if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
@@ -195,6 +212,18 @@ const tui: TuiPlugin = async (api, rawOptions, _meta) => {
                     <text fg={dim}>{` via ${s.authMethod}`}</text>
                   </box>
                 ) : null}
+
+                {(() => {
+                  const until = s.rateLimitedUntil
+                  const left = until ? Math.ceil((until - now()) / 1000) : 0
+                  if (left <= 0) return null
+                  const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`
+                  return (
+                    <box height={1}>
+                      <text fg={CLAUDE_ORANGE}>{` Refused (429), stale · retry ${mmss}`}</text>
+                    </box>
+                  )
+                })()}
 
                 {data ? (
                   <box flexDirection="column">
